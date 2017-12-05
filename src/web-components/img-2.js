@@ -7,6 +7,9 @@ export class Img2 extends HTMLElement {
 
     constructor() {
         super();
+
+        // Private class variables
+        this._root = null;
         this._$img = null;
         this._$preview = null;
         this._preview = null;
@@ -16,12 +19,17 @@ export class Img2 extends HTMLElement {
         this._rendered = false;
         this._loading = false;
         this._loaded = false;
-        this._preloading = false;
-        this._preloaded = false;
+        this._preCaching = false;
+        this._preCached = false;
         this._srcReady = false;
 
-        this._preload = this._preload.bind(this);
+        // Settings
+        this._renderOnPreCached = Img2.settings.RENDER_ONCE_PRECACHED;
+
+        // Bound class methods
+        this._precache = this._precache.bind(this);
         this._onImgLoad = this._onImgLoad.bind(this);
+        this._onImgPreCached = this._onImgPreCached.bind(this);
     }
 
     [__style__]() {
@@ -60,6 +68,11 @@ export class Img2 extends HTMLElement {
         this._preview = this.getAttribute("src-preview");
         this._width = this.getAttribute("width");
         this._height = this.getAttribute("height");
+        // Override any global settings
+        const ropc = this.getAttribute("render-on-pre-cached");
+        if (ropc === "false") {
+            this._renderOnPreCached = false;
+        }
 
         if (!this._src || !this._width || !this._height) return;
 
@@ -69,20 +82,19 @@ export class Img2 extends HTMLElement {
 
         // Figure out if this image is within view
         Img2.addIntersectListener(this, () => {
-            Img2._removePreloadListener(this._preload);
+            Img2._removePreCacheListener(this._precache);
             this._render();
-            this._$preview.src = this._preview;
             this._load();
             Img2.removeIntersectListener(this);
         });
 
-        // Listen for preload instruction
-        Img2._addPreloadListener(this._preload, this._src);
+        // Listen for precache instruction
+        Img2._addPreCacheListener(this._precache, this._src);
 
     }
 
     _load() {
-        if (this._preloaded === false) Img2._priorityCount += 1;
+        if (this._preCached === false) Img2._priorityCount += 1;
         this._$img.onload = this._onImgLoad;
         this._loading = true;
         this._$img.src = this._src;
@@ -91,15 +103,21 @@ export class Img2 extends HTMLElement {
     _onImgLoad() {
         this._loading = false;
         this._loaded = true;
-        this.shadowRoot.removeChild(this._$preview);
+        if (this._$preview !== null) {
+            this._root.removeChild(this._$preview);
+            this._$preview = null;
+        }
         this._$img.onload = null;
-        if (this._preloaded === false) Img2._priorityCount -= 1;
+        if (this._preCached === false) Img2._priorityCount -= 1;
     }
 
-    _onImgPreload() {
-        this._preloading = false;
-        this._preloaded = true;
-        this._load();
+    _onImgPreCached() {
+        this._preCaching = false;
+        this._preCached = true;
+        if (this._renderOnPreCached !== false) {
+            this._render();
+            this._load();
+        }
     }
 
     static get observedAttributes() {
@@ -119,71 +137,73 @@ export class Img2 extends HTMLElement {
         if (this._rendered === true) return;
 
         // Attach the Shadow Root to the element
-        this.attachShadow({mode: "open"});
+        this._root = this.attachShadow({mode: "open"});
         // Create the initial template with styles
-        this.shadowRoot.innerHTML = `${this[__style__]()}`;
-        if (this._preview !== null) {
+        this._root.innerHTML = `${this[__style__]()}`;
+        // If a preview image has been specified
+        if (this._preview !== null && this._preCached === false && this._loaded === false) {
+            // Create the element
             this._$preview = document.createElement("img");
             this._$preview.classList.add("img2-preview");
-            this.shadowRoot.appendChild(this._$preview);
+            this._$preview.src = this._preview;
+            // Add the specified width and height
+            this._$preview.width = this._width;
+            this._$preview.height = this._height;
+            // Add it to the Shadow Root
+            this._root.appendChild(this._$preview);
         }
         // Create the actual image element to be used to display the image
         this._$img = document.createElement("img");
         this._$img.classList.add("img2-src");
-        // Add the image to the Shadow Root
-        this.shadowRoot.appendChild(this._$img);
-
-        // If some dimensions have been specified then add them to the image element
+        // add the specified width and height to the image element
         this._$img.width = this._width;
         this._$img.height = this._height;
-        this._$preview.width = this._width;
-        this._$preview.height = this._height;
-
+        // Add the image to the Shadow Root
+        this._root.appendChild(this._$img);
+        // Flag as rendered
         this._rendered = true;
 
     }
 
-    _preload() {
-        this._preloading = true;
-        console.log("START PRELOAD:", this);
+    _precache() {
+        this._preCaching = true;
+        Img2._preCache(this._src, this._onImgPreCached);
     }
 
 
-    static _preloadListeners = new Map();
-    static _addPreloadListener(cb, url) {
-        Img2._preloadListeners.set(cb, url);
+    static _preCacheListeners = new Map();
+    static _addPreCacheListener(cb, url) {
+        Img2._preCacheListeners.set(cb, url);
     }
 
-    static _removePreloadListener(cb) {
-        Img2._preloadListeners.delete(cb);
+    static _removePreCacheListener(cb) {
+        Img2._preCacheListeners.delete(cb);
     }
 
-    static _startPreload() {
-        for (let cb of Img2._preloadListeners.keys()) {
-            cb();
-        }
+    static _startPreCache() {
+        for (let cb of Img2._preCacheListeners.keys()) cb();
     }
 
     /**
-     * Methods used to determine when currently visible (priority) elements have finished download to then inform other elements to preload
+     * Methods used to determine when currently visible (priority) elements have finished download to then inform other elements to pre-cache
      */
 
     static __priorityCount = 0;
-    static _startPreloadDebounce = null;
+    static _startPreCacheDebounce = null;
     static get _priorityCount() {
         return Img2.__priorityCount;
     }
     static set _priorityCount(value) {
         Img2.__priorityCount = value;
         if (Img2.__priorityCount < 1) {
-            // Inform components that they can start to preload their images
+            // Inform components that they can start to pre-cache their images
             // Debounce in case the user scrolls because then there will be more priority images
-            if (Img2._startPreloadDebounce !== null) {
-                clearTimeout(Img2._startPreloadDebounce);
-                Img2._startPreloadDebounce = null;
+            if (Img2._startPreCacheDebounce !== null) {
+                clearTimeout(Img2._startPreCacheDebounce);
+                Img2._startPreCacheDebounce = null;
             }
-            Img2._startPreloadDebounce = setTimeout(function(){
-                if (Img2.__priorityCount < 1) Img2._startPreload();
+            Img2._startPreCacheDebounce = setTimeout(function(){
+                if (Img2.__priorityCount < 1) Img2._startPreCache();
             }, 500);
         }
     }
@@ -192,7 +212,7 @@ export class Img2 extends HTMLElement {
      * Methods used to determine when this element is in the visible viewport
      */
     static _intersectListeners = new Map();
-    static _observer = new IntersectionObserver(Img2.handleIntersect, {
+    static _observer = new IntersectionObserver(Img2._handleIntersect, {
         root: null,
         rootMargin: "0px",
         threshold: 0
@@ -207,7 +227,7 @@ export class Img2 extends HTMLElement {
         if ($element) Img2._observer.unobserve($element);
     }
 
-    static handleIntersect(entries) {
+    static _handleIntersect(entries) {
         entries.forEach(entry => {
             if (entry.isIntersecting === true) {
                 const cb = Img2._intersectListeners.get(entry.target);
@@ -216,17 +236,49 @@ export class Img2 extends HTMLElement {
         });
     }
 
-    /**
-     * Methods used to preload/precache images using a WebWorker
-     */
-    static _worker = new Worker(window.URL.createObjectURL(
-        new Blob([`self.onmessage=${function (e) { caches.open("img-2").then((cache) => { cache.add(e.data.location + e.data.url).then(() => { self.postMessage(e.data.url); }).catch(console.error); }); }.toString()};`], { type: "text/javascript"})
-    ));
+    static _preCacheCallbacks = {};
+    static _preCache(url, cb) {
 
+        let slot = Img2._preCacheCallbacks[url];
+        if (slot === undefined) {
+            Img2._preCacheCallbacks[url] = {
+                cached: false,
+                cbs: [cb]
+            };
+            const location = (url.indexOf("http") > -1) ? url : window.location.href + url;
+            Img2._worker.postMessage({ location: location, url: url });
+        } else {
+            if (slot.cached === true) {
+                cb();
+            } else {
+                slot.cbs.push(cb);
+            }
+        }
+    }
 }
 
+/**
+ * Methods used to pre-cache images using a WebWorker
+ */
+
+Img2._worker = new Worker(window.URL.createObjectURL(
+    new Blob([`self.onmessage=${function (e) {
+        fetch(e.data.location).then((response) => {
+            if (response.status === 200 || response.status === 0) {
+                return Promise.resolve(response)
+            } else {
+                return Promise.reject(new Error(`Couldn't pre-cache URL '${e.data.url}'.`));
+            }
+        }).then((response) => {
+            return response.blob();
+        }).then(() => {
+            self.postMessage(e.data.url);
+        }).catch(console.error);
+    }.toString()};`], { type: "text/javascript"})
+));
+
 Img2._worker.onmessage = function (e) {
-    const slot = proto._callbacks[e.data];
+    const slot = Img2._preCacheCallbacks[e.data];
     if (slot !== undefined) {
         slot.cached = true;
         slot.cbs = slot.cbs.filter(cb => {
@@ -236,6 +288,11 @@ Img2._worker.onmessage = function (e) {
             return false;
         });
     }
+};
+
+/** Img2 Settings **/
+Img2.settings = {
+    "RENDER_ONCE_PRECACHED": true // Set this to false to save memory but can cause jank during scrolling
 };
 
 window.customElements.define("img-2", Img2);
